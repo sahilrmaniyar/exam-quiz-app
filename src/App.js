@@ -81,20 +81,65 @@ function App() {
   };
 
   const extractQuestionsWithAI = async (pdfBase64, pdfImages) => {
-    try {
-      setProcessingStatus('Extracting questions with AI...');
-      
-      // This is a placeholder - in production you'd call your own AI API
-      // For now, we'll use a simpler extraction method
-      
-      const mockExtraction = await extractQuestionsManually(pdfImages);
-      return mockExtraction;
-      
-    } catch (error) {
-      console.error('AI extraction error:', error);
-      return [];
+  try {
+    setProcessingStatus('Extracting text from PDF...');
+    
+    // Extract text from PDF using pdf.js
+    const arrayBuffer = Uint8Array.from(atob(pdfBase64), c => c.charCodeAt(0)).buffer;
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    
+    let fullText = '';
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items.map(item => item.str).join(' ');
+      fullText += pageText + '\n\n';
     }
-  };
+    
+    setProcessingStatus('Sending to AI for extraction...');
+    
+    // Call our Groq backend
+    const response = await fetch('/api/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pdfText: fullText })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Extraction failed');
+    }
+
+    const data = await response.json();
+    
+    if (!data.success || !data.questions) {
+      throw new Error('Invalid response from AI');
+    }
+    
+    setProcessingStatus('Linking diagram images...');
+    
+    // Link diagram images to questions
+    const questions = data.questions.map((q, index) => {
+      if (q.has_diagram) {
+        // Estimate which PDF page this question is on
+        const questionsPerPage = Math.ceil(data.questions.length / pdfImages.length);
+        const estimatedPage = Math.floor(index / questionsPerPage);
+        const pageImage = pdfImages[Math.min(estimatedPage, pdfImages.length - 1)];
+        
+        if (pageImage) {
+          q.diagram_image = pageImage.imageData;
+        }
+      }
+      return q;
+    });
+    
+    return questions;
+    
+  } catch (error) {
+    console.error('AI extraction error:', error);
+    throw error;
+  }
+};
 
   const extractQuestionsManually = async (pdfImages) => {
     // Simple heuristic extraction - you can enhance this
